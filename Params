@@ -1,22 +1,109 @@
-properties([
-    parameters([
-        string(name: 'EAPI_BRANCH', description: 'EAPI branch name'),
-        string(name: 'REACT_BRANCH', description: 'React branch name'),
-        string(name: 'ReleaseConfigId', description: 'Release configuration ID'),
-        string(name: 'logicalEnvironment', description: 'Logical environment name'),
-        string(name: 'target_environment', description: 'Target environment name'),
-        
-        [$class: 'ChoiceParameter', 
-         choiceType: 'PT_SINGLE_SELECT', 
-         name: 'PIPELINE_SELECTION', 
-         description: 'Select which pipeline(s) to trigger', 
-         script: [
-             $class: 'GroovyScript', 
-             script: [
-                 return ['Staff', 'Cust', 'Both']
-             ]
-         ]]
-    ])
-])
+pipeline {
+    agent any
 
-// Rest of the pipeline remains the same as above
+    // Environment variables
+    environment {
+        EAPI_REPO = 'https://github.com/yourorg/eapi-repo.git'
+        NEXUS_URL = 'https://nexus.yourorg.com/repository'
+    }
+
+    // Parameters with Active Choice
+    parameters {
+        string(name: 'EAPI_BRANCH', description: 'EAPI branch name')
+        string(name: 'REACT_BRANCH', description: 'React branch name')
+        string(name: 'ReleaseConfigId', description: 'Release configuration ID')
+        string(name: 'logicalEnvironment', description: 'Logical environment name')
+        string(name: 'target_environment', description: 'Target environment name')
+
+        // Active Choice parameter for pipeline selection
+        activeChoice(
+            name: 'PIPELINE_SELECTION',
+            description: 'Select which pipeline(s) to trigger',
+            choiceType: 'PT_SINGLE_SELECT',
+            script: {
+                return ['Staff', 'Cust', 'Both']
+            }
+        )
+    }
+
+    stages {
+        stage('Trigger Selected Pipelines') {
+            steps {
+                script {
+                    // Parameters for Staff pipeline
+                    def staffParams = [
+                        string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH),
+                        string(name: 'EAPI_REPO', value: env.EAPI_REPO),
+                        string(name: 'NEXUS_URL', value: env.NEXUS_URL)
+                    ]
+
+                    // Parameters for Cust pipeline
+                    def custParams = [
+                        string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH),
+                        string(name: 'ReleaseConfigId', value: params.ReleaseConfigId),
+                        string(name: 'target_environment', value: params.target_environment),
+                        string(name: 'EAPI_REPO', value: env.EAPI_REPO),
+                        string(name: 'NEXUS_URL', value: env.NEXUS_URL)
+                    ]
+
+                    echo "Environment Variables:"
+                    echo "EAPI_REPO: ${env.EAPI_REPO}"
+                    echo "NEXUS_URL: ${env.NEXUS_URL}"
+
+                    switch(params.PIPELINE_SELECTION.toUpperCase()) {
+                        case 'STAFF':
+                            echo "Triggering Staff pipeline with parameters: ${staffParams}"
+                            build job: 'Staff', 
+                                  parameters: staffParams, 
+                                  wait: false,
+                                  propagate: false
+                            break
+
+                        case 'CUST':
+                            echo "Triggering Cust pipeline with parameters: ${custParams}"
+                            build job: 'Cust', 
+                                  parameters: custParams, 
+                                  wait: false,
+                                  propagate: false
+                            break
+
+                        case 'BOTH':
+                            parallel {
+                                stage('Trigger Staff Pipeline') {
+                                    steps {
+                                        echo "Triggering Staff pipeline with parameters: ${staffParams}"
+                                        build job: 'Staff', 
+                                              parameters: staffParams, 
+                                              wait: false,
+                                              propagate: false
+                                    }
+                                }
+                                stage('Trigger Cust Pipeline') {
+                                    steps {
+                                        echo "Triggering Cust pipeline with parameters: ${custParams}"
+                                        build job: 'Cust', 
+                                              parameters: custParams, 
+                                              wait: false,
+                                              propagate: false
+                                    }
+                                }
+                            }
+                            break
+
+                        default:
+                            error("Invalid pipeline selection: ${params.PIPELINE_SELECTION}")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline execution completed for selection: ${params.PIPELINE_SELECTION}"
+        }
+        failure {
+            echo "Pipeline failed for selection: ${params.PIPELINE_SELECTION}"
+        }
+    }
+}
