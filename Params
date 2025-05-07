@@ -1,0 +1,96 @@
+pipeline {
+    agent any
+    
+    parameters {
+        string(name: 'PARAM1', description: 'Parameter for Pipeline X')
+        string(name: 'PARAM2', description: 'Parameter for Pipeline X')
+        string(name: 'PARAM3', description: 'Parameter for Pipeline Y')
+        string(name: 'PARAM4', description: 'Parameter for Pipeline Y')
+        choice(
+            name: 'TRIGGER_OPTION',
+            description: 'Select which pipelines to trigger',
+            choices: [
+                'Trigger Pipeline X only',
+                'Trigger Pipeline Y only',
+                'Trigger both X and Y'
+            ]
+        )
+    }
+    
+    stages {
+        stage('Preparation') {
+            steps {
+                echo "Preparing to trigger downstream pipelines"
+                script {
+                    // Define common parameters for both pipelines
+                    def commonParams = [
+                        string(name: 'SOURCE_PIPELINE', value: env.JOB_NAME),
+                        string(name: 'SOURCE_BUILD', value: env.BUILD_NUMBER)
+                    ]
+                    
+                    // Define parameters for Pipeline X
+                    def paramsX = commonParams + [
+                        string(name: 'PARAM1', value: params.PARAM1),
+                        string(name: 'PARAM2', value: params.PARAM2)
+                    ]
+                    
+                    // Define parameters for Pipeline Y
+                    def paramsY = commonParams + [
+                        string(name: 'PARAM3', value: params.PARAM3),
+                        string(name: 'PARAM4', value: params.PARAM4)
+                    ]
+                    
+                    // Store parameters for later use
+                    env.PARAMS_X = writeJSON returnText: true, json: paramsX
+                    env.PARAMS_Y = writeJSON returnText: true, json: paramsY
+                }
+            }
+        }
+        
+        stage('Parallel Trigger') {
+            when {
+                expression { params.TRIGGER_OPTION != null }
+            }
+            steps {
+                script {
+                    parallel(
+                        'Pipeline X': {
+                            if (params.TRIGGER_OPTION.contains('X')) {
+                                echo "Triggering Pipeline X with params: ${env.PARAMS_X}"
+                                def paramsX = readJSON text: env.PARAMS_X
+                                build job: 'x', 
+                                      wait: false,
+                                      parameters: paramsX
+                            } else {
+                                echo "Skipping Pipeline X based on selection"
+                            }
+                        },
+                        'Pipeline Y': {
+                            if (params.TRIGGER_OPTION.contains('Y')) {
+                                echo "Triggering Pipeline Y with params: ${env.PARAMS_Y}"
+                                def paramsY = readJSON text: env.PARAMS_Y
+                                build job: 'y',
+                                      wait: false,
+                                      parameters: paramsY
+                            } else {
+                                echo "Skipping Pipeline Y based on selection"
+                            }
+                        },
+                        failFast: false
+                    )
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "Pipeline execution completed"
+            script {
+                // Clean up environment variables
+                env.PARAMS_X = null
+                env.PARAMS_Y = null
+            }
+        }
+    }
+}
