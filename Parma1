@@ -4,7 +4,9 @@ pipeline {
     parameters {
         string(name: 'EAPI_BRANCH', description: 'EAPI branch name')
         string(name: 'REACT_BRANCH', description: 'React branch name')
-        booleanParam(name: 'logical_enc', defaultValue: false, description: 'Logical encryption flag')
+        string(name: 'ReleaseConfigId', description: 'Release configuration ID')
+        string(name: 'logicalEnvironment', description: 'Logical environment name')
+        string(name: 'target_environment', description: 'Target environment name')
         
         choice(
             name: 'PIPELINE_SELECTION',
@@ -18,44 +20,57 @@ pipeline {
         stage('Trigger Selected Pipelines') {
             steps {
                 script {
-                    // Parameters for Staff pipeline (only EAPI_BRANCH)
+                    // Parameters for Staff pipeline
                     def staffParams = [
                         string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH)
                     ]
                     
-                    // Parameters for Cust pipeline (all three parameters)
+                    // Parameters for Cust pipeline
                     def custParams = [
                         string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH),
-                        string(name: 'REACT_BRANCH', value: params.REACT_BRANCH),
-                        booleanParam(name: 'logical_enc', value: params.logical_enc)
+                        string(name: 'ReleaseConfigId', value: params.ReleaseConfigId),
+                        string(name: 'target_environment', value: params.target_environment)
                     ]
                     
                     switch(params.PIPELINE_SELECTION.toUpperCase()) {
                         case 'STAFF':
-                            build job: 'Staff', parameters: staffParams
+                            echo "Triggering Staff pipeline with parameters: ${staffParams}"
+                            build job: 'Staff', parameters: staffParams, wait: false
                             break
+                            
                         case 'CUST':
-                            build job: 'Cust', parameters: custParams
+                            echo "Triggering Cust pipeline with parameters: ${custParams}"
+                            build job: 'Cust', parameters: custParams, wait: false
                             break
+                            
                         case 'BOTH':
                             parallel {
                                 stage('Trigger Staff Pipeline') {
                                     steps {
-                                        build job: 'Staff', parameters: staffParams
+                                        echo "Triggering Staff pipeline with parameters: ${staffParams}"
+                                        build job: 'Staff', parameters: staffParams, wait: false
                                     }
                                 }
                                 stage('Trigger Cust Pipeline') {
                                     steps {
-                                        build job: 'Cust', parameters: custParams
+                                        echo "Triggering Cust pipeline with parameters: ${custParams}"
+                                        build job: 'Cust', parameters: custParams, wait: false
                                     }
                                 }
                             }
                             break
+                            
                         default:
                             error("Invalid pipeline selection: ${params.PIPELINE_SELECTION}")
                     }
                 }
             }
+        }
+    }
+    
+    post {
+        always {
+            echo "Pipeline execution completed for selection: ${params.PIPELINE_SELECTION}"
         }
     }
 }
