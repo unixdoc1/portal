@@ -1,95 +1,63 @@
+properties([
+    parameters([
+        string(name: 'PARAM1', description: 'Parameter 1 for Staff pipeline'),
+        string(name: 'PARAM2', description: 'Parameter 2 for Staff pipeline'),
+        string(name: 'PARAM3', description: 'Parameter 3 for Cust pipeline'),
+        string(name: 'PARAM4', description: 'Parameter 4 for Cust pipeline'),
+        
+        [$class: 'ChoiceParameter', 
+         choiceType: 'PT_SINGLE_SELECT', 
+         name: 'PIPELINE_CHOICE', 
+         description: 'Select which pipeline(s) to trigger', 
+         script: [
+             $class: 'GroovyScript', 
+             script: [
+                 return ['Staff', 'Cust', 'Both']
+             ]
+         ]]
+    ])
+])
+
 pipeline {
     agent any
     
-    parameters {
-        string(name: 'PARAM1', description: 'Parameter for Pipeline X')
-        string(name: 'PARAM2', description: 'Parameter for Pipeline X')
-        string(name: 'PARAM3', description: 'Parameter for Pipeline Y')
-        string(name: 'PARAM4', description: 'Parameter for Pipeline Y')
-        choice(
-            name: 'TRIGGER_OPTION',
-            description: 'Select which pipelines to trigger',
-            choices: [
-                'Trigger Pipeline X only',
-                'Trigger Pipeline Y only',
-                'Trigger both X and Y'
-            ]
-        )
-    }
-    
     stages {
-        stage('Preparation') {
+        stage('Trigger Pipelines') {
             steps {
-                echo "Preparing to trigger downstream pipelines"
                 script {
-                    // Define common parameters for both pipelines
-                    def commonParams = [
-                        string(name: 'SOURCE_PIPELINE', value: env.JOB_NAME),
-                        string(name: 'SOURCE_BUILD', value: env.BUILD_NUMBER)
-                    ]
-                    
-                    // Define parameters for Pipeline X
-                    def paramsX = commonParams + [
+                    def staffParams = [
                         string(name: 'PARAM1', value: params.PARAM1),
                         string(name: 'PARAM2', value: params.PARAM2)
                     ]
                     
-                    // Define parameters for Pipeline Y
-                    def paramsY = commonParams + [
+                    def custParams = [
                         string(name: 'PARAM3', value: params.PARAM3),
                         string(name: 'PARAM4', value: params.PARAM4)
                     ]
                     
-                    // Store parameters for later use
-                    env.PARAMS_X = writeJSON returnText: true, json: paramsX
-                    env.PARAMS_Y = writeJSON returnText: true, json: paramsY
-                }
-            }
-        }
-        
-        stage('Parallel Trigger') {
-            when {
-                expression { params.TRIGGER_OPTION != null }
-            }
-            steps {
-                script {
-                    parallel(
-                        'Pipeline X': {
-                            if (params.TRIGGER_OPTION.contains('X')) {
-                                echo "Triggering Pipeline X with params: ${env.PARAMS_X}"
-                                def paramsX = readJSON text: env.PARAMS_X
-                                build job: 'x', 
-                                      wait: false,
-                                      parameters: paramsX
-                            } else {
-                                echo "Skipping Pipeline X based on selection"
+                    switch(params.PIPELINE_CHOICE) {
+                        case 'Staff':
+                            build job: 'Staff', parameters: staffParams
+                            break
+                        case 'Cust':
+                            build job: 'Cust', parameters: custParams
+                            break
+                        case 'Both':
+                            parallel {
+                                stage('Trigger Staff') {
+                                    steps {
+                                        build job: 'Staff', parameters: staffParams
+                                    }
+                                }
+                                stage('Trigger Cust') {
+                                    steps {
+                                        build job: 'Cust', parameters: custParams
+                                    }
+                                }
                             }
-                        },
-                        'Pipeline Y': {
-                            if (params.TRIGGER_OPTION.contains('Y')) {
-                                echo "Triggering Pipeline Y with params: ${env.PARAMS_Y}"
-                                def paramsY = readJSON text: env.PARAMS_Y
-                                build job: 'y',
-                                      wait: false,
-                                      parameters: paramsY
-                            } else {
-                                echo "Skipping Pipeline Y based on selection"
-                            }
-                        },
-                        failFast: false
-                    )
+                            break
+                    }
                 }
-            }
-        }
-    }
-    
-    post {
-        always {
-            echo "Pipeline execution completed"
-            script {
-                // Clean up environment variables
-                env.PARAMS_X = null
-                env.PARAMS_Y = null
             }
         }
     }
