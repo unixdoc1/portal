@@ -1,0 +1,136 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME = "react-eapi"
+        APP_VERSION = "${env.BUILD_NUMBER}"
+        DOCKER_IMAGE = "nexus.example.com/frontend/${APP_NAME}:${APP_VERSION}"
+        EAPI_REPO = "https://github.com/your-org/eapi.git"
+        OPERATIONS_REPO = "https://github.com/your-org/operations.git"
+        K8S_MANIFEST_PATH = "kubernetes/frontend/deployment.yaml"
+        NEXUS_REPO = "https://nexus.example.com/repository/npm-hosted/"
+    }
+
+    stages {
+        stage('Clone EAPI Repository') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        url: env.EAPI_REPO,
+                        credentialsId: 'git-credentials'
+                    ]]
+                ])
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh """
+                    npm install
+                    npm audit fix
+                """
+            }
+        }
+
+        stage('Build React App') {
+            steps {
+                sh "npm run build"
+                archiveArtifacts artifacts: 'build/**', fingerprint: true
+            }
+        }
+
+        stage('Build Docker Image with Kaniko') {
+            steps {
+                container('kaniko') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'nexus-credentials',
+                        usernameVariable: 'NEXUS_USER',
+                        passwordVariable: 'NEXUS_PASS'
+                    )]) {
+                        sh """
+                        /kaniko/executor \
+                            --context ${WORKSPACE} \
+                            --dockerfile ${WORKSPACE}/Dockerfile \
+                            --destination ${DOCKER_IMAGE} \
+                            --cache=true \
+                            --credential-helper=echo --username=${NEXUS_USER} --password=${NEXUS_PASS}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Clone Operations Repository') {
+            steps {
+                dir('operations-repo') {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/main']],
+                        userRemoteConfigs: [[
+                            url: env.OPERATIONS_REPO,
+                            credentialsId: 'git-credentials'
+                        ]]
+                    ])
+                }
+            }
+        }
+
+        stage('Update Kubernetes Manifest') {
+            steps {
+                dir('operations-repo') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'git-credentials',
+                        usernameVariable: 'GIT_USER',
+                        passwordVariable: 'GIT_PASS'
+                    )]) {
+                        sh """
+                            git config --global user.email "jenkins@example.com"
+                            git config --global user.name "Jenkins"
+                            sed -i 's|image: .*|image: ${DOCKER_IMAGE}|g' ${K8S_MANIFEST_PATH}
+                            git add ${K8S_MANIFEST_PATH}
+                            git commit -m "Update ${APP_NAME} image to ${DOCKER_IMAGE} [ci skip]"
+                            git push https://${GIT_USER}:${GIT_PASS}@github.com/your-org/operations.git HEAD:main
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Push Artifacts to Nexus') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-credentials',
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS'
+                )]) {
+                    sh """
+                        tar -czf build-${APP_VERSION}.tar.gz build/
+                        curl -v -u ${NEXUS_USER}:${NEXUS_PASS} \
+                            --upload-file build-${APP_VERSION}.tar.gz \
+                            ${NEXUS_REPO}/${APP_NAME}/${APP_VERSION}/build-${APP_VERSION}.tar.gz
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(
+                color: 'good',
+                message: "Success: ${APP_NAME} v${APP_VERSION} deployed. Image: ${DOCKER_IMAGE}"
+            )
+        }
+        failure {
+            slackSend(
+                color: 'danger',
+                message: "Failed: ${APP_NAME} build #${env.BUILD_NUMBER}"
+            )
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
