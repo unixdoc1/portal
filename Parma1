@@ -1,76 +1,94 @@
 pipeline {
     agent any
-    
+
     parameters {
-        string(name: 'EAPI_BRANCH', description: 'EAPI branch name')
-        string(name: 'REACT_BRANCH', description: 'React branch name')
-        string(name: 'ReleaseConfigId', description: 'Release configuration ID')
-        string(name: 'logicalEnvironment', description: 'Logical environment name')
-        string(name: 'target_environment', description: 'Target environment name')
-        
-        choice(
-            name: 'PIPELINE_SELECTION',
-            description: 'Select which pipeline(s) to trigger',
-            choices: ['Staff', 'Cust', 'Both'],
-            defaultValue: 'Both'
-        )
+        string(name: 'EAPI_BRANCH', defaultValue: '', description: 'EAPI Branch')
+        string(name: 'REACT_BRANCH', defaultValue: '', description: 'React Branch')
+        string(name: 'ReleaseConfigId', defaultValue: '', description: 'Release Config ID')
+        string(name: 'logicalEnvironment', defaultValue: '', description: 'Logical Environment')
+        string(name: 'target_environment', defaultValue: '', description: 'Target Environment')
+
+        choice(name: 'PIPELINE_CHOICE', choices: ['Staff', 'Cust', 'BOTH'], description: 'Select pipeline(s) to run')
     }
-    
+
+    environment {
+        EAPI_REPO = 'https://git.example.com/eapi.git'
+        NEXUS_URL = 'https://nexus.example.com/repository/releases/'
+    }
+
+    // Declare shared variables here
+    options {
+        // This ensures parallel and script steps behave properly
+        preserveStashes()
+    }
+
+    // Shared pipeline variables
+    // Use def outside to make them global to entire pipeline
+    // (need to define them as environment-level via script or workaround)
     stages {
         stage('Trigger Selected Pipelines') {
             steps {
                 script {
-                    // Parameters for Staff pipeline
-                    def staffParams = [
-                        string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH)
-                    ]
-                    
-                    // Parameters for Cust pipeline
-                    def custParams = [
-                        string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH),
-                        string(name: 'ReleaseConfigId', value: params.ReleaseConfigId),
-                        string(name: 'target_environment', value: params.target_environment)
-                    ]
-                    
-                    switch(params.PIPELINE_SELECTION.toUpperCase()) {
-                        case 'STAFF':
-                            echo "Triggering Staff pipeline with parameters: ${staffParams}"
-                            build job: 'Staff', parameters: staffParams, wait: false
-                            break
-                            
-                        case 'CUST':
-                            echo "Triggering Cust pipeline with parameters: ${custParams}"
-                            build job: 'Cust', parameters: custParams, wait: false
-                            break
-                            
-                        case 'BOTH':
-                            parallel {
-                                stage('Trigger Staff Pipeline') {
-                                    steps {
-                                        echo "Triggering Staff pipeline with parameters: ${staffParams}"
-                                        build job: 'Staff', parameters: staffParams, wait: false
-                                    }
-                                }
-                                stage('Trigger Cust Pipeline') {
-                                    steps {
-                                        echo "Triggering Cust pipeline with parameters: ${custParams}"
-                                        build job: 'Cust', parameters: custParams, wait: false
-                                    }
-                                }
-                            }
-                            break
-                            
-                        default:
-                            error("Invalid pipeline selection: ${params.PIPELINE_SELECTION}")
+                    // Declare outside of closures
+                    // These will be set dynamically
+                    currentBuild.description = ""
+                    // Global variables using env.* as workaround for visibility in post
+                    env.STAFF_RESULT = ""
+                    env.CUST_RESULT = ""
+
+                    def runStaff = {
+                        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                            echo "Triggering Staff pipeline..."
+                            def result = build job: 'Staff', parameters: [
+                                string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH)
+                            ], wait: true, propagate: false
+                            env.STAFF_RESULT = result.result
+                        }
+                    }
+
+                    def runCust = {
+                        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                            echo "Triggering Cust pipeline..."
+                            def result = build job: 'Cust', parameters: [
+                                string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH),
+                                string(name: 'ReleaseConfigId', value: params.ReleaseConfigId),
+                                string(name: 'target_environment', value: params.target_environment)
+                            ], wait: true, propagate: false
+                            env.CUST_RESULT = result.result
+                        }
+                    }
+
+                    if (params.PIPELINE_CHOICE == 'Staff') {
+                        runStaff()
+                    } else if (params.PIPELINE_CHOICE == 'Cust') {
+                        runCust()
+                    } else if (params.PIPELINE_CHOICE == 'BOTH') {
+                        parallel(
+                            staffJob: { runStaff() },
+                            custJob: { runCust() }
+                        )
+                    }
+
+                    if ((params.PIPELINE_CHOICE == 'Staff' || params.PIPELINE_CHOICE == 'BOTH') && env.STAFF_RESULT != 'SUCCESS') {
+                        error("Staff pipeline failed with result: ${env.STAFF_RESULT}")
+                    }
+
+                    if ((params.PIPELINE_CHOICE == 'Cust' || params.PIPELINE_CHOICE == 'BOTH') && env.CUST_RESULT != 'SUCCESS') {
+                        error("Cust pipeline failed with result: ${env.CUST_RESULT}")
                     }
                 }
             }
         }
     }
-    
+
     post {
         always {
-            echo "Pipeline execution completed for selection: ${params.PIPELINE_SELECTION}"
+            echo "Build completed."
+            echo "Staff pipeline result: ${env.STAFF_RESULT ?: 'N/A'}"
+            echo "Cust pipeline result: ${env.CUST_RESULT ?: 'N/A'}"
+        }
+        failure {
+            echo "UI pipeline failed because one or more child pipelines failed."
         }
     }
 }
