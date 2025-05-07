@@ -1,0 +1,138 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'IMAGE_NAME',
+            choices: [
+                'service-one',
+                'service-two',
+                'service-three',
+                'service-four',
+                'service-five',
+                'service-six',
+                'service-seven',
+                'service-eight',
+                'service-nine',
+                'service-ten'
+            ],
+            description: 'Select the Docker image to promote'
+        )
+        
+        choice(
+            name: 'IMAGE_TAG',
+            choices: [''],
+            description: 'Select the tag to promote (populated after image selection)'
+        )
+    }
+
+    stages {
+        stage('Initialize') {
+            steps {
+                script {
+                    // If running for the first time, populate tags
+                    if (params.IMAGE_NAME && params.IMAGE_TAG == '') {
+                        echo "Fetching available tags for ${params.IMAGE_NAME}..."
+                        def tags = getAvailableTags(params.IMAGE_NAME)
+                        currentBuild.rawBuild.getAction(ParametersAction.class).replace(
+                            new ParametersAction([
+                                new ChoiceParameterValue(
+                                    'IMAGE_NAME',
+                                    params.IMAGE_NAME,
+                                    [
+                                        'service-one',
+                                        'service-two',
+                                        'service-three',
+                                        'service-four',
+                                        'service-five',
+                                        'service-six',
+                                        'service-seven',
+                                        'service-eight',
+                                        'service-nine',
+                                        'service-ten'
+                                    ]
+                                ),
+                                new ChoiceParameterValue(
+                                    'IMAGE_TAG',
+                                    tags.size() > 0 ? tags[0] : 'none',
+                                    tags
+                                )
+                            ])
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Validate Selection') {
+            steps {
+                script {
+                    if (params.IMAGE_TAG == 'none') {
+                        error("No tags available for ${params.IMAGE_NAME} in dev repository")
+                    }
+                    echo "Selected image: ${params.IMAGE_NAME}:${params.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Promote Image') {
+            steps {
+                script {
+                    echo "Promoting ${params.IMAGE_NAME}:${params.IMAGE_TAG} from dev to prod"
+                    promoteDockerImage(
+                        imageName: params.IMAGE_NAME,
+                        imageTag: params.IMAGE_TAG
+                    )
+                }
+            }
+        }
+    }
+}
+
+// Helper function to get available tags from Nexus dev repository
+def getAvailableTags(String imageName) {
+    def devNexusUrl = "http://nexus-server:18080"
+    def repository = "docker-dev"
+    
+    // Using curl to get tags (you might need to adjust based on your Nexus API version)
+    def tags = []
+    try {
+        def response = sh(
+            script: "curl -s -X GET '${devNexusUrl}/v2/${imageName}/tags/list'",
+            returnStdout: true
+        )
+        
+        def json = readJSON text: response
+        tags = json.tags ?: []
+    } catch (Exception e) {
+        echo "Failed to fetch tags: ${e.message}"
+    }
+    
+    return tags.size() > 0 ? tags : ['none']
+}
+
+// Helper function to promote image between repositories
+def promoteDockerImage(Map args) {
+    def devNexusUrl = "http://nexus-server:18080"
+    def prodNexusUrl = "http://nexus-server:28080"
+    def devRepository = "docker-dev"
+    def prodRepository = "docker-prod"
+    
+    // Step 1: Pull from dev
+    sh """
+        docker pull ${devNexusUrl}/${devRepository}/${args.imageName}:${args.imageTag}
+    """
+    
+    // Step 2: Tag for prod
+    sh """
+        docker tag ${devNexusUrl}/${devRepository}/${args.imageName}:${args.imageTag} \
+                   ${prodNexusUrl}/${prodRepository}/${args.imageName}:${args.imageTag}
+    """
+    
+    // Step 3: Push to prod
+    sh """
+        docker push ${prodNexusUrl}/${prodRepository}/${args.imageName}:${args.imageTag}
+    """
+    
+    echo "Successfully promoted ${args.imageName}:${args.imageTag} to production repository"
+}
