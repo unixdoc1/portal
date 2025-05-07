@@ -2,53 +2,57 @@ pipeline {
     agent any
     
     parameters {
-        string(name: 'PARAM1', description: 'Parameter 1 for Staff pipeline')
-        string(name: 'PARAM2', description: 'Parameter 2 for Staff pipeline')
-        string(name: 'PARAM3', description: 'Parameter 3 for Cust pipeline')
-        string(name: 'PARAM4', description: 'Parameter 4 for Cust pipeline')
+        string(name: 'EAPI_BRANCH', description: 'EAPI branch name')
+        string(name: 'REACT_BRANCH', description: 'React branch name')
+        booleanParam(name: 'logical_enc', defaultValue: false, description: 'Logical encryption flag')
         
         choice(
-            name: 'PIPELINE_CHOICE',
+            name: 'PIPELINE_SELECTION',
             description: 'Select which pipeline(s) to trigger',
-            choices: ['Staff', 'Cust', 'Both']
+            choices: ['Staff', 'Cust', 'Both'],
+            defaultValue: 'Both'
         )
     }
     
     stages {
-        stage('Trigger Pipelines') {
+        stage('Trigger Selected Pipelines') {
             steps {
                 script {
+                    // Parameters for Staff pipeline (only EAPI_BRANCH)
                     def staffParams = [
-                        string(name: 'PARAM1', value: params.PARAM1),
-                        string(name: 'PARAM2', value: params.PARAM2)
+                        string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH)
                     ]
                     
+                    // Parameters for Cust pipeline (all three parameters)
                     def custParams = [
-                        string(name: 'PARAM3', value: params.PARAM3),
-                        string(name: 'PARAM4', value: params.PARAM4)
+                        string(name: 'EAPI_BRANCH', value: params.EAPI_BRANCH),
+                        string(name: 'REACT_BRANCH', value: params.REACT_BRANCH),
+                        booleanParam(name: 'logical_enc', value: params.logical_enc)
                     ]
                     
-                    switch(params.PIPELINE_CHOICE) {
-                        case 'Staff':
+                    switch(params.PIPELINE_SELECTION.toUpperCase()) {
+                        case 'STAFF':
                             build job: 'Staff', parameters: staffParams
                             break
-                        case 'Cust':
+                        case 'CUST':
                             build job: 'Cust', parameters: custParams
                             break
-                        case 'Both':
+                        case 'BOTH':
                             parallel {
-                                stage('Trigger Staff') {
+                                stage('Trigger Staff Pipeline') {
                                     steps {
                                         build job: 'Staff', parameters: staffParams
                                     }
                                 }
-                                stage('Trigger Cust') {
+                                stage('Trigger Cust Pipeline') {
                                     steps {
                                         build job: 'Cust', parameters: custParams
                                     }
                                 }
                             }
                             break
+                        default:
+                            error("Invalid pipeline selection: ${params.PIPELINE_SELECTION}")
                     }
                 }
             }
