@@ -1,6 +1,5 @@
 pipeline {
     agent any
-
     parameters {
         string(name: 'EAPI_BRANCH', defaultValue: '', description: 'EAPI Branch')
         string(name: 'REACT_BRANCH', defaultValue: '', description: 'React Branch')
