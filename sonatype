@@ -1,0 +1,251 @@
+pipeline {
+    agent any
+    
+    environment {
+        IQ_SERVER = 'sonatypeiq02:8443'
+        IQ_USER = credentials('sonatype-iq-credentials') // Store credentials in Jenkins
+        EMAIL_TO = 'abc@xyz.com'
+        // List of application IDs to scan
+        APP_IDS = '''
+            app1,
+            app2,
+            app3,
+            app4,
+            app5,
+            app6,
+            app7,
+            app8,
+            app9,
+            app10
+        '''.split(',').collect { it.trim() }
+    }
+    
+    stages {
+        stage('Pull Security Issues from Sonatype IQ') {
+            steps {
+                script {
+                    // Initialize report data structure
+                    def allReports = [:]
+                    
+                    // Process each application
+                    APP_IDS.each { appId ->
+                        try {
+                            echo "Processing application: ${appId}"
+                            
+                            // Get the report from Sonatype IQ
+                            def iqReport = getIqSecurityReport(appId)
+                            
+                            // Filter for Critical, Severe, Moderate issues
+                            def filteredIssues = filterIssues(iqReport)
+                            
+                            // Store the report
+                            allReports[appId] = [
+                                name: getAppName(appId),
+                                issues: filteredIssues,
+                                total: countIssues(filteredIssues)
+                            ]
+                        } catch (Exception e) {
+                            echo "Failed to process ${appId}: ${e.getMessage()}"
+                        }
+                    }
+                    
+                    // Generate HTML report
+                    def htmlReport = generateHtmlReport(allReports)
+                    
+                    // Save report to file
+                    writeFile file: 'security-report.html', text: htmlReport
+                    
+                    // Archive the report
+                    archiveArtifacts artifacts: 'security-report.html'
+                }
+            }
+        }
+        
+        stage('Send Email Report') {
+            steps {
+                emailext(
+                    subject: "Sonatype IQ Security Report - ${currentBuild.currentResult}",
+                    body: '''${SCRIPT, template="HTML"}''',
+                    to: env.EMAIL_TO,
+                    attachmentsPattern: 'security-report.html',
+                    mimeType: 'text/html'
+                )
+            }
+        }
+    }
+    
+    post {
+        always {
+            // Clean up if needed
+            deleteDir()
+        }
+    }
+}
+
+// Function to get application name from ID
+def getAppName(appId) {
+    def auth = "Basic ${Base64.getEncoder().encodeToString("${IQ_USER}".bytes)}"
+    
+    def response = httpRequest(
+        url: "https://${IQ_SERVER}/api/v2/applications/${appId}",
+        httpMode: 'GET',
+        customHeaders: [[name: 'Authorization', value: auth]],
+        validResponseCodes: '200'
+    )
+    
+    def appInfo = readJSON(text: response.content)
+    return appInfo.name ?: appId
+}
+
+// Function to get security report from Sonatype IQ
+def getIqSecurityReport(appId) {
+    def auth = "Basic ${Base64.getEncoder().encodeToString("${IQ_USER}".bytes)}"
+    
+    def response = httpRequest(
+        url: "https://${IQ_SERVER}/api/v2/applications/${appId}/reports",
+        httpMode: 'GET',
+        customHeaders: [[name: 'Authorization', value: auth]],
+        validResponseCodes: '200'
+    )
+    
+    return readJSON(text: response.content)
+}
+
+// Function to filter issues by severity
+def filterIssues(iqReport) {
+    def filtered = [
+        Critical: [],
+        Severe: [],
+        Moderate: []
+    ]
+    
+    // Assuming the report structure has components with violations
+    iqReport.components?.each { component ->
+        component.violations?.each { violation ->
+            if (violation.severity in ['Critical', 'Severe', 'Moderate']) {
+                filtered[violation.severity] << [
+                    component: component.packageUrl,
+                    issue: violation.issueId,
+                    description: violation.description,
+                    policy: violation.policyName
+                ]
+            }
+        }
+    }
+    
+    return filtered
+}
+
+// Function to count total issues
+def countIssues(filteredIssues) {
+    return filteredIssues.Critical.size() + filteredIssues.Severe.size() + filteredIssues.Moderate.size()
+}
+
+// Function to generate HTML report
+def generateHtmlReport(allReports) {
+    def html = """
+    <html>
+    <head>
+        <style>
+            body { font-family: Arial, sans-serif; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            .Critical { background-color: #ffcccc; }
+            .Severe { background-color: #ffe6cc; }
+            .Moderate { background-color: #ffffcc; }
+            .summary { margin-bottom: 30px; }
+            .app-header { background-color: #e6f3ff; padding: 10px; margin-top: 20px; }
+            .severity-count { font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h1>Sonatype IQ Security Report</h1>
+        <p>Generated on: ${new Date()}</p>
+        
+        <h2>Summary</h2>
+        <table class="summary">
+            <tr>
+                <th>Application</th>
+                <th>Critical</th>
+                <th>Severe</th>
+                <th>Moderate</th>
+                <th>Total Issues</th>
+            </tr>
+    """
+    
+    // Add summary rows
+    allReports.each { appId, report ->
+        html += """
+            <tr>
+                <td>${report.name}</td>
+                <td class="Critical">${report.issues.Critical.size()}</td>
+                <td class="Severe">${report.issues.Severe.size()}</td>
+                <td class="Moderate">${report.issues.Moderate.size()}</td>
+                <td>${report.total}</td>
+            </tr>
+        """
+    }
+    
+    html += """
+        </table>
+    """
+    
+    // Add detailed sections for each application
+    allReports.each { appId, report ->
+        if (report.total > 0) {
+            html += """
+                <div class="app-header">
+                    <h2>${report.name}</h2>
+                    <p>
+                        <span class="Critical severity-count">Critical: ${report.issues.Critical.size()}</span> | 
+                        <span class="Severe severity-count">Severe: ${report.issues.Severe.size()}</span> | 
+                        <span class="Moderate severity-count">Moderate: ${report.issues.Moderate.size()}</span>
+                    </p>
+                </div>
+            """
+            
+            ['Critical', 'Severe', 'Moderate'].each { severity ->
+                if (report.issues[severity].size() > 0) {
+                    html += """
+                        <h3 class="${severity}">${severity} Issues (${report.issues[severity].size()})</h3>
+                        <table>
+                            <tr>
+                                <th>Component</th>
+                                <th>Issue ID</th>
+                                <th>Description</th>
+                                <th>Policy</th>
+                            </tr>
+                    """
+                    
+                    report.issues[severity].each { issue ->
+                        html += """
+                            <tr>
+                                <td>${issue.component}</td>
+                                <td>${issue.issue}</td>
+                                <td>${issue.description}</td>
+                                <td>${issue.policy}</td>
+                            </tr>
+                        """
+                    }
+                    
+                    html += "</table>"
+                }
+            }
+        } else {
+            html += """
+                <div class="app-header">
+                    <h2>${report.name}</h2>
+                    <p>No Critical, Severe, or Moderate issues found</p>
+                </div>
+            """
+        }
+    }
+    
+    html += """
+        </body>
+        </html>
+    """
+    
+    return html
+}
